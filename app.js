@@ -3,7 +3,7 @@ import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, creat
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, setDoc, updateDoc, addDoc, collection, getDocs, query, where, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, EMAIL_DOMAIN, MAX_DIST_M } from "./firebase-config.js";
 import { UNITS, NEEDS, SITES, START, MIN_DATE, SURVEY_GOAL, ITEMS, PROBS, PROB_NAME, REASONS, SITE_ST, LABELS, FIELDS, AGE, num, total, TOTAL_TARGET, unitById, SITES_BY_UNIT,
-  nf, pct, fmtD, rateOf, CHECKS, CHECK_NAME, isoOf, haversine, calc, alertsFor, reportText, analyzeVisits, surveyAgg, supState, stockInfo, stockFlag, rankRows } from "./logic.js";
+  nf, pct, fmtD, rateOf, CHECKS, CHECK_NAME, isoOf, haversine, calc, alertsFor, reportText, analyzeVisits, surveyAgg, supState, stockInfo, stockFlag, rankRows, dayTable, campaignDay, CAMPAIGN_DAYS, END } from "./logic.js";
 
 const VER = "5.0";
 const app = initializeApp(firebaseConfig), auth = getAuth(app);
@@ -105,7 +105,7 @@ onAuthStateChanged(auth, async u => {
   if (!u) { profile = null; return loginView(); }
   try { const s = await getDoc(doc(db, "users", u.uid)); if (!s.exists()) throw 0; profile = { uid: u.uid, ...s.data() }; }
   catch { toast("حسابك غير مفعّل، كلّم الإدارة"); await signOut(auth); return; }
-  ({ unit: unitView, supervisor: supView, admin: adminView }[profile.role] || loginView)();
+  ({ unit: unitView, supervisor: supView, admin: adminView, store: storeView }[profile.role] || loginView)();
 });
 function loginView() {
   root.innerHTML = `<div class="card login"><div class="logo">💉</div><h1>حملة الحصبة والحصبة الألمانية</h1><div class="mut">إدارة المنشاة الصحية</div>
@@ -121,46 +121,73 @@ function loginView() {
 
 /* ---------- shared panels: sites ---------- */
 let siteFilter = "all";
+const SITE_TYPES = ["موقع ثابت", "وحدة صحية", "مستشفى", "مركز شباب", "أخرى"];
 function sitesHtml(unit, editable) {
-  const list = SITES_BY_UNIT[unit] || []; let T = 0, V = 0, nd = 0, nr = 0, nn = 0; const rows = [];
-  list.forEach((s, i) => { const d = S.sites["s" + unit + "_" + i], st = d && d.status ? d.status : "none", v = d ? num(d.vacc) : 0;
-    T += s[3]; V += v; if (st === "done") nd++; else if (st === "revisit") nr++; else nn++; if (siteFilter === "all" || siteFilter === st) rows.push({ i, s, st, v }); });
-  return `<div class="card"><div class="row"><span>مطعّمون في المدارس والحضانات</span><b>${nf(V)}</b></div><div class="meter"><i style="width:${Math.min(100, T ? V / T * 100 : 0)}%"></i></div>
+  const items = (SITES_BY_UNIT[unit] || []).map((s, i) => ({ i: String(i), s, custom: false }))
+    .concat(Object.entries(S.sites).filter(([, d]) => d.custom && +d.unit === +unit).sort((x, y) => (x[1].ts || "").localeCompare(y[1].ts || ""))
+      .map(([id, d]) => ({ i: id.split("_").slice(1).join("_"), s: [unit, d.name || "", d.type || "موقع ثابت", num(d.target)], custom: true })));
+  let T = 0, V = 0, nd = 0, nr = 0, nn = 0; const rows = [];
+  items.forEach(it => { const d = S.sites["s" + unit + "_" + it.i], st = d && d.status ? d.status : "none", v = d ? num(d.vacc) : 0;
+    T += it.s[3]; V += v; if (st === "done") nd++; else if (st === "revisit") nr++; else nn++; if (siteFilter === "all" || siteFilter === st) rows.push({ ...it, st, v }); });
+  return `<div class="card"><div class="row"><span>مطعّمون في مواقع التطعيم (مدارس وحضانات ومواقع ثابتة)</span><b>${nf(V)}</b></div><div class="meter"><i style="width:${Math.min(100, T ? V / T * 100 : 0)}%"></i></div>
   <div class="row mut"><span>المستهدف ${nf(T)} (${pct(T ? V / T * 100 : 0)})</span><span>تم ${nd} · إعادة ${nr} · لم تُزَر ${nn}</span></div></div>
+  ${editable ? `<div class="card"><h2>➕ إضافة موقع تطعيم ثابت</h2><div class="mut">للمواقع اللي مش مدارس ولا حضانات (وحدة صحية، مستشفى، مركز شباب، نقطة ثابتة...).</div>
+  <label>اسم الموقع</label><input id="ns_name" maxlength="60"><div class="grid"><div><label>النوع</label><select id="ns_type">${SITE_TYPES.map(t => `<option>${t}</option>`).join("")}</select></div><div><label>المستهدف (اختياري)</label><input id="ns_target" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+  <p><button id="nsAdd">إضافة الموقع</button></p></div>` : ""}
   <div class="tabs sm">${[["all", "الكل"], ["none", "لم تُزَر"], ["done", "تم"], ["revisit", "إعادة زيارة"]].map(f => `<button data-sf="${f[0]}"${siteFilter === f[0] ? ' class="on"' : ""}>${f[1]}</button>`).join("")}</div>
-  ${rows.map(r => `<div class="card site" data-i="${r.i}"><div class="bar"><b>${esc(r.s[1])}</b><span class="pill">${esc(r.s[2])}</span></div><div class="mut">المستهدف ${nf(r.s[3])}</div>
+  ${rows.map(r => `<div class="card site" data-i="${esc(r.i)}"><div class="bar"><b>${esc(r.s[1])}</b><span class="pill${r.custom ? " ok" : ""}">${esc(r.s[2])}</span></div><div class="mut">المستهدف ${nf(r.s[3])}</div>
   ${editable ? `<div class="seg">${["none", "done", "revisit"].map(k => `<button data-st="${k}"${r.st === k ? ' class="on"' : ""}>${SITE_ST[k]}</button>`).join("")}</div>
-  <label>عدد المطعّمين في الموقع</label><input data-site="${r.i}" type="number" inputmode="numeric" min="0" placeholder="0" value="${r.v || ""}" data-no-keep="1">` : `<div>${SITE_ST[r.st]} · مطعّمون ${nf(r.v)}</div>`}</div>`).join("") || '<div class="mut">لا توجد مواقع بهذه الحالة.</div>'}`;
+  <label>عدد المطعّمين في الموقع</label><input data-site="${esc(r.i)}" type="number" inputmode="numeric" min="0" placeholder="0" value="${r.v || ""}" data-no-keep="1">${r.custom ? `<p><button class="ghost sm" data-delsite="${esc(r.i)}">حذف الموقع</button></p>` : ""}` : `<div>${SITE_ST[r.st]} · مطعّمون ${nf(r.v)}</div>`}</div>`).join("") || '<div class="mut">لا توجد مواقع بهذه الحالة.</div>'}`;
 }
 async function setSite(unit, i, patch) {
-  const id = "s" + unit + "_" + i, c = S.sites[id] || {}, d = { unit, i, status: c.status || "none", vacc: num(c.vacc), ts: new Date().toISOString(), uid: profile.uid, ...patch };
+  const id = "s" + unit + "_" + i, c = S.sites[id] || {}, d = { ...c, unit, i, status: c.status || "none", vacc: num(c.vacc), ts: c.ts && c.custom ? c.ts : new Date().toISOString(), uid: profile.uid, ...patch };
   if (d.status === "none" && d.vacc > 0) d.status = "done";
   try { S.sites[id] = d; schedule(); await save(setDoc(doc(db, "sites", id), d), null); } catch (e) { toast("تعذّر الحفظ: " + errMsg(e)); }
 }
 function siteEvents(unit) { return {
-  click(e) { const f = e.target.closest("[data-sf]"); if (f) { siteFilter = f.dataset.sf; return renderTab(true); }
-    const b = e.target.closest("[data-st]"); if (b) setSite(unit(), +b.closest(".site").dataset.i, { status: b.dataset.st }); },
-  change(e) { const i = e.target.dataset.site; if (i == null) return; const v = intOrNull(e.target.value); if (v === null) return toast("اكتب رقمًا صحيحًا"); setSite(unit(), +i, { vacc: v }); } }; }
+  async click(e) { const f = e.target.closest("[data-sf]"); if (f) { siteFilter = f.dataset.sf; return renderTab(true); }
+    if (e.target.id === "nsAdd") { const name = $("#ns_name").value.trim(), tg = intOrNull($("#ns_target").value); if (!name) return toast("اكتب اسم الموقع"); if (tg === null) return toast("المستهدف لازم يكون رقمًا صحيحًا");
+      const u = unit(), i = "f" + Date.now().toString(36), id = "s" + u + "_" + i, d = { unit: u, i, custom: true, name: name.slice(0, 60), type: $("#ns_type").value, target: tg, status: "none", vacc: 0, ts: new Date().toISOString(), uid: profile.uid };
+      try { S.sites[id] = d; schedule(); await save(setDoc(doc(db, "sites", id), d), "تمت إضافة الموقع"); $("#ns_name").value = ""; $("#ns_target").value = ""; } catch (er) { delete S.sites[id]; schedule(); toast("تعذّر الحفظ: " + errMsg(er)); } return; }
+    const dl = e.target.closest("[data-delsite]"); if (dl) { if (!confirm("حذف هذا الموقع؟")) return; const id = "s" + unit() + "_" + dl.dataset.delsite; try { await save(deleteDoc(doc(db, "sites", id)), "تم الحذف"); delete S.sites[id]; schedule(); } catch (er) { toast("تعذّر الحذف: " + errMsg(er)); } return; }
+    const b = e.target.closest("[data-st]"); if (b) setSite(unit(), b.closest(".site").dataset.i, { status: b.dataset.st }); },
+  change(e) { const i = e.target.dataset.site; if (i == null) return; const v = intOrNull(e.target.value); if (v === null) return toast("اكتب رقمًا صحيحًا"); setSite(unit(), i, { vacc: v }); } }; }
 
 /* ---------- shared panels: supplies ---------- */
-function supHtml(unit, editable) {
-  const n = NEEDS[unit] || [], dd = (S.supplies["p" + unit] || {}).d || {}, st = supState(unit, dd);
-  return `<div class="card"><div class="bar"><b>${esc(unitById(unit).name)}</b><span class="pill ${st === "full" ? "ok" : st === "part" ? "warn" : ""}">${st === "full" ? "مكتمل" : st === "part" ? "ناقص" : "لم يُسلَّم شيء"}</span></div>
-  <div class="tw"><table><tr><th>الصنف</th><th>المطلوب</th><th>المُسلَّم</th><th>المتبقي</th></tr>${ITEMS.map((it, i) => { const v = num(dd[it[0]]), rem = n[i] - v;
-    return `<tr><td>${it[1]}</td><td>${nf(n[i])}</td><td>${editable ? `<input class="cell" id="sd_${it[0]}" data-sd="${it[0]}" type="number" inputmode="numeric" min="0" value="${v || ""}" placeholder="0">` : nf(v)}</td><td class="${rem < 0 ? "bad" : ""}">${rem < 0 ? nf(-rem) + " زيادة" : nf(rem)}</td></tr>`; }).join("")}</table></div>
-  ${editable ? '<p><button id="supSave">حفظ المستلزمات</button></p>' : ""}</div>`;
+function supHtml(unit, mode) { /* mode: view | store (المخزن يسلّم) | unit (الوحدة تستلم) | admin */
+  const n = NEEDS[unit] || [], dc = S.supplies["p" + unit] || {}, dd = dc.d || {}, rr = dc.r || {}, st = supState(unit, dd);
+  const eD = mode === "store" || mode === "admin", eR = mode === "unit" || mode === "admin", hasR = !!dc.r;
+  const dAny = ITEMS.some(it => num(dd[it[0]]) > 0), pend = dAny && !hasR, diff = hasR && ITEMS.some(it => num(rr[it[0]]) !== num(dd[it[0]]));
+  return `<div class="card"><div class="bar"><b>${esc(unitById(unit).name)}</b><span class="pill ${st === "full" ? "ok" : st === "part" ? "warn" : ""}">${st === "full" ? "تسليم مكتمل" : st === "part" ? "تسليم ناقص" : "لم يُسلَّم شيء"}</span></div>
+  <div class="pills">${pend ? '<span class="pill warn">⏳ في انتظار تأكيد استلام الوحدة</span>' : diff ? '<span class="pill bad">⚠️ فرق بين التسليم والاستلام</span>' : hasR ? '<span class="pill ok">✔ تم الاستلام</span>' : ""}</div>
+  ${mode === "unit" ? '<div class="mut">الأرقام المكتوبة هي اللي سلّمها المخزن. لو اللي استلمته مختلف غيّر الرقم، ثم اضغط «تأكيد الاستلام».</div>' : ""}
+  <div class="tw"><table><tr><th>الصنف</th><th>المطلوب</th><th>سلّم المخزن</th><th>استلمت الوحدة</th><th>المتبقي</th></tr>${ITEMS.map((it, i) => { const k = it[0], dv = num(dd[k]), rv = num(rr[k]), rem = n[i] - (hasR ? rv : dv), dif = hasR && rv !== dv;
+    return `<tr><td>${it[1]}</td><td>${nf(n[i])}</td><td>${eD ? `<input class="cell" id="sd_${k}" type="number" inputmode="numeric" min="0" value="${dv || ""}" placeholder="0">` : nf(dv)}</td>
+    <td class="${dif ? "bad" : ""}">${eR ? `<input class="cell" id="sr_${k}" type="number" inputmode="numeric" min="0" value="${hasR ? (rv || "") : (mode === "unit" ? (dv || "") : "")}" placeholder="0">` : hasR ? nf(rv) : "—"}</td><td class="${rem < 0 ? "bad" : ""}">${rem < 0 ? nf(-rem) + " زيادة" : nf(rem)}</td></tr>`; }).join("")}</table></div>
+  ${mode === "store" ? '<p><button id="supSave" class="big">💾 حفظ التسليم</button></p>' : mode === "unit" ? '<p><button id="rcvSave" class="big">✔ تأكيد الاستلام</button></p>' : mode === "admin" ? '<p><button id="supSave">حفظ</button></p>' : ""}</div>`;
 }
-async function saveSup(unit) {
-  const d = {}; let bad = false; ITEMS.forEach(it => { const v = intOrNull($("#sd_" + it[0]).value); if (v === null) bad = true; else d[it[0]] = v; });
+async function saveSup(unit, mode) {
+  let bad = false; const rd = p => { const o = {}; ITEMS.forEach(it => { const v = intOrNull($("#" + p + it[0]).value); if (v === null) bad = true; else o[it[0]] = v; }); return o; };
+  const now = new Date().toISOString(), data = { unit };
+  if (mode !== "unit") { data.d = rd("sd_"); data.ts = now; data.uid = profile.uid; }
+  if (mode === "unit" || (mode === "admin" && (S.supplies["p" + unit] || {}).r || mode === "admin" && ITEMS.some(it => $("#sr_" + it[0]).value !== ""))) { data.r = rd("sr_"); data.rts = now; data.ruid = profile.uid; }
   if (bad) return toast("الأعداد لازم تكون أرقامًا صحيحة");
-  try { await save(setDoc(doc(db, "supplies", "p" + unit), { unit, d, ts: new Date().toISOString(), uid: profile.uid }), "تم حفظ المستلزمات"); } catch (e) { toast("تعذّر الحفظ: " + errMsg(e)); }
+  try { await save(setDoc(doc(db, "supplies", "p" + unit), data, { merge: true }), mode === "unit" ? "تم تأكيد الاستلام ✅" : "تم حفظ المستلزمات"); } catch (e) { toast("تعذّر الحفظ: " + errMsg(e)); }
+}
+function supIssues() {
+  const pend = [], diff = [];
+  UNITS.forEach(u => { const dc = S.supplies["p" + u.id] || {}, dd = dc.d || {}, rr = dc.r || {};
+    if (ITEMS.some(it => num(dd[it[0]]) > 0) && !dc.r) pend.push(u.name); else if (dc.r && ITEMS.some(it => num(rr[it[0]]) !== num(dd[it[0]]))) diff.push(u.name); });
+  return { pend, diff };
 }
 function supOverview() {
-  const tot = ITEMS.map(() => [0, 0]), cnt = { full: 0, part: 0, none: 0 }, nm = { part: [], none: [] };
-  UNITS.forEach(u => { const dd = (S.supplies["p" + u.id] || {}).d || {}, n = NEEDS[u.id] || []; ITEMS.forEach((it, i) => { tot[i][0] += n[i]; tot[i][1] += num(dd[it[0]]); }); const s = supState(u.id, dd); cnt[s]++; if (s !== "full") nm[s].push(u.name); });
-  return `<div class="card"><h2>موقف المستلزمات في الإدارة</h2><div class="stats">${stat("مكتملة", cnt.full)}${stat("ناقصة", cnt.part)}${stat("لم تستلم", cnt.none)}</div>
-  <div class="tw"><table><tr><th>الصنف</th><th>المطلوب</th><th>المُسلَّم</th><th>النسبة</th></tr>${ITEMS.map((it, i) => `<tr><td>${it[1]}</td><td>${nf(tot[i][0])}</td><td>${nf(tot[i][1])}</td><td>${pct(tot[i][0] ? tot[i][1] / tot[i][0] * 100 : 0)}</td></tr>`).join("")}</table></div>
-  ${nm.part.length ? `<details><summary>وحدات ناقصة (${nm.part.length})</summary><p>${esc(nm.part.join("، "))}</p></details>` : ""}${nm.none.length ? `<details><summary>وحدات لم تستلم بعد (${nm.none.length})</summary><p>${esc(nm.none.join("، "))}</p></details>` : ""}</div>`;
+  const tot = ITEMS.map(() => [0, 0, 0]), cnt = { full: 0, part: 0, none: 0 }, nm = { part: [], none: [] };
+  UNITS.forEach(u => { const dc = S.supplies["p" + u.id] || {}, dd = dc.d || {}, rr = dc.r || {}, n = NEEDS[u.id] || []; ITEMS.forEach((it, i) => { tot[i][0] += n[i]; tot[i][1] += num(dd[it[0]]); tot[i][2] += num(rr[it[0]]); }); const s = supState(u.id, dd); cnt[s]++; if (s !== "full") nm[s].push(u.name); });
+  const si = supIssues();
+  return `<div class="card"><h2>موقف المستلزمات</h2><div class="stats">${stat("تسليم مكتمل", cnt.full)}${stat("تسليم ناقص", cnt.part)}${stat("لم يُسلَّم لها", cnt.none)}${stat("لم تؤكد الاستلام", si.pend.length, si.pend.length ? "bad" : "")}</div>
+  <div class="tw"><table><tr><th>الصنف</th><th>المطلوب</th><th>المُسلَّم</th><th>المُستلَم</th><th>نسبة التسليم</th></tr>${ITEMS.map((it, i) => `<tr><td>${it[1]}</td><td>${nf(tot[i][0])}</td><td>${nf(tot[i][1])}</td><td>${nf(tot[i][2])}</td><td>${pct(tot[i][0] ? tot[i][1] / tot[i][0] * 100 : 0)}</td></tr>`).join("")}</table></div>
+  ${si.diff.length ? `<div class="alert bad"><b>فرق بين التسليم والاستلام (${si.diff.length})</b><span>${esc(si.diff.join("، "))}</span></div>` : ""}${si.pend.length ? `<details><summary>وحدات لم تؤكد الاستلام (${si.pend.length})</summary><p>${esc(si.pend.join("، "))}</p></details>` : ""}
+  ${nm.part.length ? `<details><summary>تسليم ناقص (${nm.part.length})</summary><p>${esc(nm.part.join("، "))}</p></details>` : ""}${nm.none.length ? `<details><summary>لم يُسلَّم لها بعد (${nm.none.length})</summary><p>${esc(nm.none.join("، "))}</p></details>` : ""}</div>`;
 }
 
 /* ---------- shared panels: survey ---------- */
@@ -189,6 +216,23 @@ function surveyResults() {
   <div class="tw"><table><tr><th>الوحدة</th><th>العيّنة</th><th>التغطية</th><th>المسجّلة في الحملة</th><th></th></tr>${ids.map(id => { const a = agg[id], u = unitById(id), cov = a.v / a.s * 100;
     return `<tr><td>${esc(u.name)}</td><td>${nf(a.s)}</td><td><b>${pct(cov)}</b></td><td>${pct(u.target ? (rc[id] || 0) / u.target * 100 : 0)}</td><td><span class="pill ${cov >= SURVEY_GOAL ? "ok" : "warn"}">${cov >= SURVEY_GOAL ? "مرضية" : "أقل من " + SURVEY_GOAL + "%"}</span></td></tr>`; }).join("")}</table></div></div>`;
 }
+/* ---------- جدول البلاغ كما في نموذج الوزارة ---------- */
+const AGE_H = ["9 شهور > سنة", "سنة > 5 سنوات", "5 سنوات - 10 سنة"];
+function reportTables(unitSet, title) {
+  const rows = dayTable(vals(S.reports), unitSet, today()), t = today(), c = v => nf(v);
+  const pair = (h, x, y) => `<td>${h ? c(x) : ""}</td><td>${h ? c(y) : ""}</td>`;
+  const head = `<tr><th rowspan="4">اليوم</th><th colspan="14">المطعّمون</th><th colspan="2" rowspan="3">المتخلفون</th><th colspan="2" rowspan="3">المتطعمون من المتخلفين</th><th colspan="2" rowspan="3">الآثار الجانبية الخطيرة</th></tr>
+  <tr><th colspan="6">المصريون (فئات عمرية)</th><th colspan="6">غير المصريين (فئات عمرية)</th><th colspan="2" rowspan="2">الإجمالي</th></tr>
+  <tr>${AGE_H.concat(AGE_H).map(x => `<th colspan="2">${x}</th>`).join("")}</tr><tr>${"<th>اليوم</th><th>حتى اليوم</th>".repeat(10)}</tr>`;
+  const body1 = rows.map(r => `<tr${r.date === t ? ' class="today"' : ""}><td>${r.n}</td>${AGE.map(k => pair(r.show, r.day[k], r.cum[k])).join("")}${pair(r.show, r.day.tot, r.cum.tot)}${pair(r.show, r.day.missed, r.cum.missed)}${pair(r.show, r.day.mvac, r.cum.mvac)}${pair(r.show, r.day.side, r.cum.side)}</tr>`).join("");
+  const body2 = rows.map(r => `<tr${r.date === t ? ' class="today"' : ""}><td>${r.n}</td><td>${fmtD(r.date)}</td><td>${r.show ? c(r.recv) : ""}</td><td>${r.show ? c(r.used) : ""}</td><td>${r.show ? c(r.rem) : ""}</td><td>${r.show && r.rate !== null ? r.rate : ""}</td></tr>`).join("");
+  return `<div class="ptitle">تابع: آلية التسجيل والنماذج<br>${esc(title)} · الحملة من ${fmtD(START)} إلى ${fmtD(END)} (${CAMPAIGN_DAYS} يوم)</div>
+  <div class="card tw"><div class="ptitle">البلاغ اليومي للفريق</div><table class="rt"><thead>${head}</thead><tbody>${body1}</tbody></table></div>
+  <div class="card tw"><div class="ptitle">بلاغ حركة الطعوم</div><table class="rt v"><thead><tr><th>اليوم</th><th>التاريخ</th><th>عدد الزجاجات المستلمة</th><th>عدد الزجاجات المستهلكة</th><th>عدد الزجاجات المتبقية</th><th>معدل الزجاجة</th></tr></thead><tbody>${body2}</tbody></table></div>
+  <div class="mut noprint">«حتى اليوم» = المجموع التراكمي من بداية الحملة. المتبقي = كل الزجاجات المستلمة − المستهلكة. معدل الزجاجة = أطفال ÷ زجاجات مستهلكة في اليوم.</div>
+  <div class="card noprint"><button class="ghost" id="prn">🖨️ طباعة / حفظ PDF</button></div>`;
+}
+
 /* ---------- unit ---------- */
 const GROUPS = [["المطعّمون من المصريين", ["eg1", "eg2", "eg3"]], ["المطعّمون من غير المصريين", ["ne1", "ne2", "ne3"]], ["أماكن التطعيم", ["fs", "fc", "sv", "sc", "nv", "nc"]],
   ["المتخلفون والآثار الجانبية", ["missed", "mvac", "side"]], ["الفرق والطعوم", ["teams", "recv", "used", "dmg"]]];
@@ -213,8 +257,8 @@ function unitView() {
         const g = geo(), hist = vals(S.reports).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10), anyP = hist.some(r => r._p);
         const grp = GROUPS.map(([t, ks]) => `<div class="grp"><h3>${t}</h3><div class="grid">${ks.map(k => `<div><label>${LABELS[k]}</label><input type="number" inputmode="numeric" min="0" step="1" data-k="${k}" id="f_${k}" placeholder="0"></div>`).join("")}</div></div>${k0(ks)}`).join("");
         function k0(ks) { return ks[0] === "ne1" ? '<div class="tot">إجمالي المطعّمين اليوم: <b id="liveTotal">0</b></div>' : ""; }
-        return helpCard("إزاي أسجّل تقرير اليوم؟", ["اكتب الأرقام في الخانات (الخانة اللي مفيهاش حاجة سيبها فاضية).", "راجع «إجمالي المطعّمين» إنه صح.", "اضغط «حفظ التقرير» — هتظهر رسالة تأكيد.", "لو النت واقع: اضغط حفظ برضه، هيتبعت لوحده لما النت يرجع."])
-        + `<div class="card"><h2>موقع الوحدة</h2>${g ? `<span class="ok">مسجَّل ✔</span> · ${mapLink(g)}` : `<span class="warn">لم يُسجَّل بعد.</span> وإنت داخل الوحدة اضغط: <p><button id="setGeo" class="big">📍 تسجيل موقع الوحدة</button></p>`}</div>
+        return (supIssues().pend.length ? '<div class="card" style="border-color:var(--warn)"><b>📦 المخزن سجّل تسليم مستلزمات لوحدتك</b><div class="mut">افتح تبويب «المستلزمات» وأكّد الاستلام.</div></div>' : "") + helpCard("إزاي أسجّل تقرير اليوم؟", ["اكتب الأرقام في الخانات (الخانة اللي مفيهاش حاجة سيبها فاضية).", "راجع «إجمالي المطعّمين» إنه صح.", "اضغط «حفظ التقرير» — هتظهر رسالة تأكيد.", "لو النت واقع: اضغط حفظ برضه، هيتبعت لوحده لما النت يرجع."])
+        + `<div class="card"><h2>موقع الوحدة</h2>${g ? `<span class="ok">مسجَّل ✔</span> · ${mapLink(g)}` : `<span class="warn">لم يُسجَّل بعد.</span><div class="mut">هيتسجّل <b>تلقائيًا</b> مع أول تقرير تحفظه وانت جوه الوحدة. مش محتاج تعمل حاجة.</div>`}</div>
         <div class="card">${edit ? `<div class="alert warn"><b>✏️ تعديل تقرير يوم ${fmtD(edit)}</b><span>غيّر الأرقام ثم احفظ.</span></div><p><button class="ghost" id="cancelEdit">إلغاء التعديل</button></p>` : "<h2>تقرير اليوم</h2>"}
         <label>تاريخ العمل</label><input type="date" id="d" value="${edit || today()}" min="${MIN_DATE}" max="${today()}"${edit ? " readonly" : ""}>
         <label>رقم التشغيلة (اختياري)</label><input id="f_lot" maxlength="30" placeholder="مثال: ABC123">
@@ -244,12 +288,13 @@ function unitView() {
           if (old && edit !== d && !confirm("يوجد تقرير محفوظ ليوم " + d + ". هل تريد استبداله؟")) return;
           r.lot = ($("#f_lot").value || "").trim().slice(0, 30); const btn = e.target; btn.disabled = true;
           try { try { r.loc = await getPos(); } catch (er) { r.loc = null; toast(er.message + " — سيُحفظ التقرير بدون موقع"); }
-            const g = geo(); if (r.loc && g) r.dist = haversine(r.loc, g); r.total = total(r); const now = new Date().toISOString(); r.ts = now;
+            const g = geo(); if (r.loc && g) r.dist = haversine(r.loc, g); else if (r.loc && !g && r.loc.acc <= 150) { r.dist = 0; setDoc(doc(db, "unitGeo", String(uid)), { ...r.loc, uid: profile.uid, ts: new Date().toISOString(), auto: true }).catch(() => { }); } r.total = total(r); const now = new Date().toISOString(); r.ts = now;
             r.ts0 = old ? (old.ts0 || old.ts || now) : now; if (old) { r.edited = true; r.edits = num(old.edits) + 1; }
             await save(setDoc(doc(db, "reports", `u${uid}_${d}`), r), "تم حفظ التقرير ✅"); clearForm(); lsDel(draftKey()); edit = null; fillNext = null; renderTab(true); }
           catch (er) { toast("تعذّر الحفظ: " + errMsg(er)); } btn.disabled = false; } } },
-    { k: "t", label: "مدارسي", icon: "🏫", render: () => sitesHtml(uid, true), ...se },
-    { k: "p", label: "المستلزمات", icon: "📦", render: () => supHtml(uid, false) },
+    { k: "b", label: "جدول البلاغ", icon: "🗂️", render: () => reportTables(new Set([uid]), unitById(uid).name), click(e) { if (e.target.id === "prn") window.print(); } },
+    { k: "t", label: "مواقعي", icon: "📍", render: () => sitesHtml(uid, true), ...se },
+    { k: "p", label: "المستلزمات", icon: "📦", render: () => supHtml(uid, "unit"), click(e) { if (e.target.id === "rcvSave") saveSup(uid, "unit"); } },
     { k: "c", label: "بلاغ حالة", icon: "⚠️", render() {
         const my = Object.values(S.cases).sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
         return `<div class="card"><h2>بلاغ عن أثر جانبي خطير</h2><div class="alert bad"><b>ممنوع كتابة اسم الطفل أو رقمه القومي.</b><span>اكتب العمر والأعراض فقط. وسجّل العدد كمان في تقرير اليوم.</span></div>
@@ -269,7 +314,7 @@ function supView() {
   sub("visits", query(collection(db, "visits"), where("uid", "==", profile.uid))); sub("supplies", collection(db, "supplies")); sub("survey", collection(db, "survey")); sub("reports", collection(db, "reports")); sub("geo", collection(db, "unitGeo"));
   sub("notes", doc(db, "notes", "current"), "doc"); sub("contacts", collection(db, "contacts"));
   const mine = (profile.assigned && profile.assigned.length ? UNITS.filter(u => profile.assigned.includes(u.id)) : UNITS);
-  let supUnit = +(lsGet("mr.supUnit") || mine[0].id); if (!mine.some(u => u.id === supUnit)) supUnit = mine[0].id;
+  let supUnit = +(lsGet("mr.supUnit") || mine[0].id), rtU = "all"; if (!mine.some(u => u.id === supUnit)) supUnit = mine[0].id;
   shell("مشرف: " + profile.name, [
     { k: "h", label: "اليوم", icon: "🏠", render() {
         const t = today(), rep = vals(S.reports), c = calc(rep, t), SI = stockInfo(rep, t), last = {}; vals(S.visits).forEach(v => { if (!last[v.unit] || v.date > last[v.unit]) last[v.unit] = v.date; });
@@ -299,12 +344,26 @@ function supView() {
         try { const loc = await getPos(), g = S.geo[String(unit)], dist = g ? haversine(loc, g) : null;
           await save(addDoc(collection(db, "visits"), { uid: profile.uid, name: profile.name, unit, date: d, temp: t, teams: tm, vials: vl, probs, checks, note: $("#vn").value.trim().slice(0, 200), loc, dist, ts: new Date().toISOString() }), null);
           ["vt", "vm", "vv", "vn"].forEach(i => $("#" + i).value = ""); CHECKS.forEach(c => $("#vc_" + c[0]).value = ""); PROBS.forEach(p => $("#vp_" + p[0]).checked = false);
-          toast(dist == null ? "تم التسجيل (الوحدة لم تسجّل موقعها بعد)" : dist > MAX_DIST_M ? `تم التسجيل لكن أنت بعيد ${dist} م عن الوحدة` : "تم تسجيل الزيارة ✅"); }
+          toast(dist == null ? "تم التسجيل ✅ (هيتم التحقق من الموقع أول ما الوحدة تبعت أول تقرير)" : dist > MAX_DIST_M ? `تم التسجيل لكن أنت بعيد ${dist} م عن الوحدة` : "تم تسجيل الزيارة ✅"); }
         catch (er) { toast(er.message || "تعذّر التسجيل"); } btn.disabled = false; } },
-    { k: "p", label: "المستلزمات", icon: "📦", render: () => `<div class="card"><label>الوحدة</label>${unitSel("su", mine, supUnit)}</div><div id="supBox">${supHtml(supUnit, true)}</div>`,
-      change(e) { if (e.target.id === "su") { supUnit = +e.target.value; lsSet("mr.supUnit", String(supUnit)); renderTab(false); } },
-      click(e) { if (e.target.id === "supSave") saveSup(supUnit); } },
+    { k: "b", label: "جدول البلاغ", icon: "🗂️", render() { const sel = rtU === "all" || !mine.some(u => u.id === +rtU) ? "all" : +rtU;
+        return `<div class="card noprint"><label>الوحدة</label><select id="rtu"><option value="all">كل وحداتي</option>${mine.slice().sort((a, b) => a.name.localeCompare(b.name, "ar")).map(u => `<option value="${u.id}"${sel === u.id ? " selected" : ""}>${esc(u.name)}</option>`).join("")}</select></div>`
+          + reportTables(sel === "all" ? new Set(mine.map(u => u.id)) : new Set([sel]), sel === "all" ? "وحدات المشرف " + profile.name : unitById(sel).name); },
+      change(e) { if (e.target.id === "rtu") { rtU = e.target.value; renderTab(false); } }, click(e) { if (e.target.id === "prn") window.print(); } },
+    { k: "p", label: "المستلزمات", icon: "📦", render: () => `<div class="card"><label>الوحدة</label>${unitSel("su", mine, supUnit)}</div><div class="mut">للاطلاع فقط. التسليم من أمين المخزن والاستلام من الوحدة.</div>${supHtml(supUnit, "view")}`,
+      change(e) { if (e.target.id === "su") { supUnit = +e.target.value; lsSet("mr.supUnit", String(supUnit)); renderTab(false); } } },
     { k: "j", label: "الجَشني", icon: "📊", render: () => surveyForm(mine) + surveyResults(), click(e) { if (e.target.id === "svSave") saveSurvey(); } } ]);
+}
+
+/* ---------- store keeper ---------- */
+function storeView() {
+  sub("supplies", collection(db, "supplies")); sub("notes", doc(db, "notes", "current"), "doc");
+  let supUnit = +(lsGet("mr.stUnit") || UNITS[0].id); if (!UNITS.some(u => u.id === supUnit)) supUnit = UNITS[0].id;
+  shell("أمين المخزن: " + profile.name, [
+    { k: "d", label: "تسليم", icon: "📦", render: () => helpCard("إزاي أسجّل تسليم؟", ["اختار الوحدة اللي سلّمتها.", "اكتب الكميات اللي سلّمتها لكل صنف.", "اضغط «حفظ التسليم». الوحدة هتأكّد الاستلام من عندها."]) + `<div class="card"><label>الوحدة</label>${unitSel("su", UNITS, supUnit)}</div>${supHtml(supUnit, "store")}`,
+      change(e) { if (e.target.id === "su") { supUnit = +e.target.value; lsSet("mr.stUnit", String(supUnit)); renderTab(false); } },
+      click(e) { if (e.target.id === "supSave") saveSup(supUnit, "store"); } },
+    { k: "o", label: "الموقف", icon: "📊", render: supOverview } ]);
 }
 
 /* ---------- admin ---------- */
@@ -315,14 +374,16 @@ function exportCsv() {
 }
 function adminView() {
   ["reports", "visits", "sites", "supplies", "survey", "cases", "contacts"].forEach(k => sub(k, collection(db, k))); sub("geo", collection(db, "unitGeo")); sub("notes", doc(db, "notes", "current"), "doc");
-  let ref = today(), repOpen = false, siteUnit = UNITS[0].id, supUnit = UNITS[0].id, rankAsc = true; const se = siteEvents(() => siteUnit);
+  let ref = today(), repOpen = false, siteUnit = UNITS[0].id, supUnit = UNITS[0].id, rankAsc = true, rtU = "all"; const se = siteEvents(() => siteUnit);
   shell("إدارة الصحة بالمنشاة", [
     { k: "s", label: "ملخص", icon: "📈", render() {
         const R = vals(S.reports), c = calc(R, ref), al = alertsFor(c.list, ref, today(), vals(S.sites), vals(S.visits), R); let cumT = 0, dayT = 0; c.list.forEach(p => { cumT += p.cum; dayT += p.day; });
+        { const far = R.filter(r => r.date === ref && r.date >= START && (r.loc ? (r.dist != null && r.dist > MAX_DIST_M) : true)); if (far.length) al.push({ cls: "warn", t: far.length + " تقرير اتسجّل من خارج الوحدة أو بدون موقع", x: far.slice(0, 10).map(r => unitById(r.unit).name + (r.loc ? " (" + nf(r.dist) + " م)" : " (بدون موقع)")).join("، ") }); }
+        { const si = supIssues(); if (si.pend.length) al.push({ cls: "warn", t: si.pend.length + " وحدة لم تؤكد استلام المستلزمات", x: si.pend.slice(0, 10).join("، ") }); if (si.diff.length) al.push({ cls: "bad", t: "فرق بين التسليم والاستلام في " + si.diff.length + " وحدة", x: si.diff.slice(0, 10).join("، ") }); }
         const newC = Object.entries(S.cases).filter(([, x]) => !x.seen), miss = ref === today() && ref >= START ? c.list.filter(p => !p.rep) : [];
         return `<div class="card noprint"><label>اليوم المعروض</label><input type="date" id="refd" value="${ref}" min="${MIN_DATE}" max="${today()}"></div>
         ${newC.length ? `<div class="card" style="border-color:var(--bad)"><h2 class="bad">⚠️ ${newC.length} بلاغ أثر جانبي جديد</h2>${newC.map(([, x]) => `<div class="alert bad"><b>${esc(x.unitName || "")} · ${fmtD(x.date)} · ${CASE_ST[x.st] || ""}</b><span>${esc(x.signs)}</span></div>`).join("")}<p class="noprint"><button id="goCases">فتح صفحة الحالات</button></p></div>` : ""}
-        <div class="card"><div class="stats">${stat("مطعّمو اليوم", nf(dayT))}${stat("الإجمالي", nf(cumT))}${stat("المستهدف", nf(TOTAL_TARGET))}${stat("التغطية", pct(cumT / TOTAL_TARGET * 100))}</div></div>
+        <div class="card"><div class="stats">${stat("يوم الحملة", campaignDay(ref) + "/" + CAMPAIGN_DAYS)}${stat("مطعّمو اليوم", nf(dayT))}${stat("الإجمالي", nf(cumT))}${stat("المستهدف", nf(TOTAL_TARGET))}${stat("التغطية", pct(cumT / TOTAL_TARGET * 100))}</div></div>
         <div class="card"><h2>تنبيهات</h2>${al.length ? al.map(a => `<div class="alert ${a.cls}"><b>${esc(a.t)}</b>${a.x ? `<span>${esc(a.x)}</span>` : ""}</div>`).join("") : '<div class="ok">لا توجد تنبيهات الآن.</div>'}</div>
         ${miss.length ? `<div class="card noprint"><h2>لم يبلّغوا اليوم (${miss.length})</h2>${miss.map(p => `<div class="row" style="align-items:center;border-bottom:1px solid var(--line);padding:6px 0"><b>${esc(p.u.name)}</b><span>${callBtns(p.u.id)}</span></div>`).join("")}</div>` : ""}
         <div class="card"><h2>بلاغ اليوم للمديرية</h2>${repOpen ? `<textarea id="repTxt" rows="16" readonly data-no-keep="1">${esc(reportText(c.list, ref))}</textarea><p class="noprint"><a class="btn" id="repWa" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(reportText(c.list, ref))}">إرسال واتساب</a> <button class="ghost" id="repCopy">نسخ النص</button> <button class="ghost" id="repHide">إخفاء</button></p>` : `<div class="mut">نص جاهز بأرقام يوم ${fmtD(ref)}، تنسخه أو تبعته واتساب مباشرة.</div><p class="noprint"><button class="ghost" id="repShow">تجهيز النص</button></p>`}</div>
@@ -335,11 +396,15 @@ function adminView() {
         if (id === "repCopy") { const t = $("#repTxt"); t.select(); (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject()).then(() => toast("تم النسخ"), () => { document.execCommand("copy"); toast("تم النسخ"); }); }
         const ub = e.target.closest("[data-unlock]"); if (ub) { const u = +ub.dataset.unlock, k = `u${u}_${ref}`, r = S.reports[k]; if (!r || !confirm("فتح تقرير " + unitById(u).name + " للتعديل 24 ساعة؟")) return;
           const { _p, ...clean } = r; try { await save(setDoc(doc(db, "reports", k), { ...clean, ts0: new Date().toISOString() }), "تم فتح التعديل 24 ساعة"); } catch (er) { toast(errMsg(er)); } } } },
+    { k: "b", label: "جدول البلاغ", icon: "🗂️", render() { const sel = rtU === "all" ? "all" : +rtU;
+        return `<div class="card noprint"><label>الوحدة</label><select id="rtu"><option value="all">كل وحدات المنشاة</option>${UNITS.slice().sort((a, b) => a.name.localeCompare(b.name, "ar")).map(u => `<option value="${u.id}"${sel === u.id ? " selected" : ""}>${esc(u.name)}</option>`).join("")}</select></div>`
+          + reportTables(sel === "all" ? null : new Set([sel]), sel === "all" ? "إدارة المنشاة الصحية — كل الوحدات" : unitById(sel).name); },
+      change(e) { if (e.target.id === "rtu") { rtU = e.target.value; renderTab(false); } }, click(e) { if (e.target.id === "prn") window.print(); } },
     { k: "k", label: "الترتيب", icon: "🏆", render() {
         const rows = rankRows(calc(vals(S.reports), today()).list, today()).sort((a, b) => rankAsc ? a.pc - b.pc : b.pc - a.pc);
         return `<div class="card"><h2>ترتيب الوحدات بنسبة التغطية</h2><div class="seg noprint"><button data-rk="1"${rankAsc ? ' class="on"' : ""}>الأضعف أولًا</button><button data-rk="0"${rankAsc ? "" : ' class="on"'}>الأقوى أولًا</button></div>
-        <div class="mut">«أيام للإنهاء» = الأيام المتبقية لو استمر المعدل اليومي الحالي.</div></div>
-        <div class="card tw"><table><tr><th>#</th><th>الوحدة</th><th>التغطية</th><th>متبقي</th><th>معدل/يوم</th><th>أيام للإنهاء</th></tr>${rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.p.u.name)}</td><td><b class="${r.pc >= 95 ? "ok" : r.pc < 40 && today() >= START ? "bad" : ""}">${pct(r.pc)}</b><div class="meter"><i style="width:${Math.min(100, r.pc)}%"></i></div></td><td>${nf(r.rem)}</td><td>${nf(r.avg)}</td><td>${r.rem === 0 ? "✔" : r.days === null ? "—" : r.days}</td></tr>`).join("")}</table></div>
+        <div class="mut">«المطلوب/يوم» = اللي لازم تطعّمه الوحدة يوميًا في باقي أيام الحملة (14 يوم) علشان توصل للمستهدف.</div></div>
+        <div class="card tw"><table><tr><th>#</th><th>الوحدة</th><th>التغطية</th><th>متبقي</th><th>معدل/يوم</th><th>المطلوب/يوم</th></tr>${rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.p.u.name)}</td><td><b class="${r.pc >= 95 ? "ok" : r.pc < 40 && today() >= START ? "bad" : ""}">${pct(r.pc)}</b><div class="meter"><i style="width:${Math.min(100, r.pc)}%"></i></div></td><td>${nf(r.rem)}</td><td>${nf(r.avg)}</td><td class="${r.need > r.avg * 1.2 && r.rem > 0 && today() >= START ? "bad" : ""}">${r.rem === 0 ? "✔" : nf(r.need)}</td></tr>`).join("")}</table></div>
         <div class="card noprint"><button class="ghost" id="prn">🖨️ طباعة / حفظ PDF</button></div>`; },
       click(e) { const b = e.target.closest("[data-rk]"); if (b) { rankAsc = b.dataset.rk === "1"; renderTab(true); } if (e.target.id === "prn") window.print(); } },
     { k: "v", label: "الزيارات", icon: "📋", render() {
@@ -361,16 +426,16 @@ function adminView() {
     { k: "t", label: "المواقع", icon: "🏫", render() {
         const all = vals(S.sites); let dn = 0, rv = 0; const re = {}; all.forEach(d => { if (d.status === "done") dn++; else if (d.status === "revisit") { rv++; re[d.unit] = (re[d.unit] || 0) + 1; } });
         const nm = Object.keys(re).map(u => unitById(u).name + " (" + re[u] + ")");
-        return `<div class="card"><div class="stats">${stat("مواقع", SITES.length)}${stat("تم", dn)}${stat("إعادة زيارة", rv)}${stat("لم تُزَر", Math.max(0, SITES.length - dn - rv))}</div>${nm.length ? `<details><summary>وحدات فيها مواقع تحتاج إعادة (${nm.length})</summary><p>${esc(nm.join("، "))}</p></details>` : ""}</div>
+        return `<div class="card"><div class="stats">${stat("مواقع", SITES.length + all.filter(d => d.custom).length)}${stat("تم", dn)}${stat("إعادة زيارة", rv)}${stat("لم تُزَر", Math.max(0, SITES.length + all.filter(d => d.custom).length - dn - rv))}</div>${nm.length ? `<details><summary>وحدات فيها مواقع تحتاج إعادة (${nm.length})</summary><p>${esc(nm.join("، "))}</p></details>` : ""}</div>
         <div class="card"><label>الوحدة</label>${unitSel("stu", UNITS, siteUnit)}</div>${sitesHtml(siteUnit, true)}`; },
       ...{ click(e) { se.click(e); }, change(e) { if (e.target.id === "stu") { siteUnit = +e.target.value; renderTab(false); } else se.change(e); } } },
-    { k: "p", label: "المستلزمات", icon: "📦", render: () => supOverview() + `<div class="card"><label>تسجيل تسليم لوحدة</label>${unitSel("su", UNITS, supUnit)}</div>${supHtml(supUnit, true)}`,
-      change(e) { if (e.target.id === "su") { supUnit = +e.target.value; renderTab(false); } }, click(e) { if (e.target.id === "supSave") saveSup(supUnit); } },
+    { k: "p", label: "المستلزمات", icon: "📦", render: () => supOverview() + `<div class="card"><label>تعديل تسليم/استلام وحدة (الإدارة)</label>${unitSel("su", UNITS, supUnit)}</div>${supHtml(supUnit, "admin")}`,
+      change(e) { if (e.target.id === "su") { supUnit = +e.target.value; renderTab(false); } }, click(e) { if (e.target.id === "supSave") saveSup(supUnit, "admin"); } },
     { k: "j", label: "الجَشني", icon: "📊", render: () => surveyResults() + surveyForm(UNITS), click(e) { if (e.target.id === "svSave") saveSurvey(); } },
     { k: "g", label: "الوحدات", icon: "🏥", render() {
         const n = S.notes.current || {};
         return `<div class="card"><h2>📢 إعلان لكل الوحدات والمشرفين</h2><div class="mut">يظهر أول ما يفتحوا التطبيق.</div><textarea id="annTxt" rows="3" maxlength="300" placeholder="مثال: وصلت شحنة جديدة من الطعوم، استلموها من المخزن">${esc(n.text || "")}</textarea><p><button id="annPub">نشر</button> <button class="ghost" id="annClr">مسح الإعلان</button></p></div>
-        <div class="card tw"><h2>مواقع وتليفونات الوحدات</h2><table><tr><th>الوحدة</th><th>الموقع</th><th>التليفون</th></tr>${UNITS.map(u => `<tr><td>${esc(u.name)}</td><td>${S.geo[u.id] ? mapLink(S.geo[u.id]) + ` <button class="ghost sm" data-del="${u.id}">مسح</button>` : '<span class="warn">غير مسجّل</span>'}</td><td><input class="cell" style="width:130px" id="ph_${u.id}" data-ph="${u.id}" type="tel" inputmode="tel" value="${esc(telOf(u.id))}" placeholder="01xxxxxxxxx"></td></tr>`).join("")}</table></div><div class="mut">مسح الموقع يسمح للوحدة بتسجيله من جديد. رقم التليفون تقدر تكتبه هنا أو تكتبه الوحدة بنفسها.</div>`; },
+        <div class="card tw"><h2>مواقع وتليفونات الوحدات</h2><table><tr><th>الوحدة</th><th>الموقع</th><th>التليفون</th></tr>${UNITS.map(u => `<tr><td>${esc(u.name)}</td><td>${S.geo[u.id] ? mapLink(S.geo[u.id]) + ` <button class="ghost sm" data-del="${u.id}">مسح</button>` : '<span class="warn">غير مسجّل</span>'}</td><td><input class="cell" style="width:130px" id="ph_${u.id}" data-ph="${u.id}" type="tel" inputmode="tel" value="${esc(telOf(u.id))}" placeholder="01xxxxxxxxx"></td></tr>`).join("")}</table></div><div class="mut">موقع الوحدة بيتسجّل تلقائيًا من أول تقرير. لو اتسجّل غلط امسحه، وهيتسجّل من جديد مع التقرير الجاي. رقم التليفون تقدر تكتبه هنا أو تكتبه الوحدة بنفسها.</div>`; },
       change(e) { const u = e.target.dataset.ph; if (u) save(setDoc(doc(db, "contacts", "c" + u), { unit: +u, tel: e.target.value.trim().slice(0, 20), ts: new Date().toISOString(), uid: profile.uid }), "تم حفظ الرقم").catch(er => toast(errMsg(er))); },
       async click(e) { const id = e.target.dataset.del;
         if (e.target.id === "annPub") { const x = $("#annTxt").value.trim(); if (!x) return toast("اكتب الإعلان"); try { await save(setDoc(doc(db, "notes", "current"), { text: x.slice(0, 300), ts: new Date().toISOString(), by: profile.name }), "تم نشر الإعلان"); } catch (er) { toast(errMsg(er)); } return; }
@@ -398,16 +463,18 @@ async function accounts() {
     <p><button id="mkU"${miss.length ? "" : " disabled"}>إنشاء حسابات الوحدات الناقصة (${miss.length})</button></p>
     <p><button class="ghost" id="reAll"${us.length > 1 ? "" : " disabled"}>إعادة إصدار كل الحسابات (كلمات جديدة)</button></p>
     <label>إضافة مشرف (الاسم)</label><input id="sn" data-no-keep="1"><p><button id="mkS">إضافة مشرف</button></p>
+    <label>إضافة أمين مخزن (الاسم)</label><input id="stn" data-no-keep="1"><p><button id="mkT">إضافة أمين مخزن</button></p>
     <div class="mut">كلمات المرور تظهر مرة واحدة بعد الإنشاء مع تنزيل CSV تلقائي. احفظها فورًا.</div><div id="cr"></div></div>
     <div class="card"><h2>إسناد الوحدات للمشرفين</h2>${sups.length ? `<label>المشرف</label><select id="as">${sups.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}</select>
       <div id="asu" class="checks"></div><p><button id="asSave">حفظ الإسناد</button></p><div class="mut">لو لم تُسنَد وحدات لمشرف تظهر له كل الوحدات.</div>` : '<div class="mut">أضف مشرفًا أولًا.</div>'}</div>
-    <div class="card tw"><table><tr><th>الدور</th><th>الاسم</th><th>اسم الدخول</th><th></th></tr>${us.sort((a, b) => (a.login || "") > (b.login || "") ? 1 : -1).map(u => `<tr><td>${u.role}</td><td>${esc(u.name)}</td><td dir="ltr">${esc(u.login || "")}</td><td>${u.role === "admin" ? "" : `<button class="ghost" data-re="${u.id}">إعادة إصدار</button>`}</td></tr>`).join("")}</table></div>
+    <div class="card tw"><table><tr><th>الدور</th><th>الاسم</th><th>اسم الدخول</th><th></th></tr>${us.sort((a, b) => (a.login || "") > (b.login || "") ? 1 : -1).map(u => `<tr><td>${({ admin: "إدارة", supervisor: "مشرف", unit: "وحدة", store: "مخزن" })[u.role] || u.role}</td><td>${esc(u.name)}</td><td dir="ltr">${esc(u.login || "")}</td><td>${u.role === "admin" ? "" : `<button class="ghost" data-re="${u.id}">إعادة إصدار</button>`}</td></tr>`).join("")}</table></div>
     <div class="mut">«إعادة إصدار» تعطّل الحساب القديم وتنشئ حسابًا جديدًا باسم دخول جديد وكلمة جديدة.</div>`;
     const show2 = out => { if (!out.length) return; $("#cr").innerHTML = `<div class="card"><b>احفظ الآن:</b><div class="tw"><table><tr><th>الاسم</th><th>الدخول</th><th>كلمة المرور</th></tr>${out.map(r => `<tr><td>${esc(r.name)}</td><td dir="ltr">${r.login}</td><td dir="ltr">${r.pw}</td></tr>`).join("")}</table></div><p><button id="dl">تنزيل CSV</button></p></div>`; $("#dl").onclick = () => csvDl(out); csvDl(out); };
     const fail = (u, e) => { $("#cr").innerHTML = `<div class="card bad">فشل عند ${esc(u)}: ${esc(e.code || e.message)}</div>`; };
     $("#mkU").onclick = async () => { $("#mkU").disabled = true; const out = []; for (const u of miss) { try { out.push(await mk("unit" + u.id, "unit", u.name, u.id)); } catch (e) { fail(u.name, e); break; } } show2(out); };
     $("#reAll").onclick = async () => { if (!confirm("سيتم تعطيل كل الحسابات (عدا الإدارة) وإنشاء حسابات جديدة بكلمات جديدة. متأكد؟")) return; $("#reAll").disabled = true; const out = [];
       for (const u of us.filter(x => x.role !== "admin")) { try { const base = (u.login || (u.role === "unit" ? "unit" + u.unit : "sup")).replace(/(-r\d+)+$/, ""); out.push(await mk(base + "-r" + Math.floor(Math.random() * 900 + 100), u.role, u.name, u.unit, u.assigned)); await deleteDoc(doc(db, "users", u.id)); } catch (e) { fail(u.name, e); break; } } show2(out); };
+    $("#mkT").onclick = async () => { const n = $("#stn").value.trim(); if (!n) return toast("اكتب اسم أمين المخزن"); try { show2([await mk("store" + (us.filter(u => u.role === "store").length + 1) + "-" + Math.floor(Math.random() * 90 + 10), "store", n)]); } catch (e) { fail(n, e); } };
     $("#mkS").onclick = async () => { const n = $("#sn").value.trim(); if (!n) return toast("اكتب اسم المشرف"); try { show2([await mk("sup" + (sups.length + 1) + "-" + Math.floor(Math.random() * 90 + 10), "supervisor", n)]); } catch (e) { fail(n, e); } };
     if (sups.length) { const paint = () => { const s = sups.find(x => x.id === $("#as").value) || {}; $("#asu").innerHTML = UNITS.map(u => `<label class="chk"><input type="checkbox" data-u="${u.id}"${(s.assigned || []).includes(u.id) ? " checked" : ""}> ${esc(u.name)}</label>`).join(""); };
       $("#as").onchange = paint; paint();

@@ -57,8 +57,22 @@ export function stockFlag(s) {
   if (!s || s.recv <= 0) return null; if (s.bal < 0) return { cls: "bad", t: "رصيد طعوم سالب" };
   if (s.days !== null && s.days < 1) return { cls: "bad", t: "الطعوم تكفي أقل من يوم" };
   if (s.days !== null && s.days < 2) return { cls: "warn", t: "الطعوم تكفي حوالي " + (Math.round(s.days * 10) / 10) + " يوم" }; return null; }
-export function rankRows(list, ref) { const n = ref >= START ? Math.max(1, dayDiff(ref, START) + 1) : 1;
-  return list.map(p => { const pc = p.u.target ? p.cum / p.u.target * 100 : 0, avg = p.cum / n, rem = Math.max(0, p.u.target - p.cum); return { p, pc, avg, rem, days: avg > 0 ? Math.ceil(rem / avg) : null }; }); }
+export const CAMPAIGN_DAYS = 14;
+export const dayDate = i => { const t = new Date(START + "T00:00:00"); t.setDate(t.getDate() + i); return isoOf(t); };
+export const END = dayDate(CAMPAIGN_DAYS - 1);
+export const campaignDay = ref => ref < START ? 0 : Math.min(CAMPAIGN_DAYS, dayDiff(ref, START) + 1);
+export function rankRows(list, ref) { const el = ref >= START ? dayDiff(ref, START) + 1 : 0, left = Math.max(1, CAMPAIGN_DAYS - el);
+  return list.map(p => { const pc = p.u.target ? p.cum / p.u.target * 100 : 0, avg = p.cum / Math.max(1, el), rem = Math.max(0, p.u.target - p.cum); return { p, pc, avg, rem, need: Math.ceil(rem / left), days: avg > 0 ? Math.ceil(rem / avg) : null }; }); }
+/* نماذج الوزارة: صفوف الأيام 1..14. unitSet = Set أرقام الوحدات أو null لكل المنشاة */
+export function dayTable(reports, unitSet, todayIso) {
+  const K = AGE.concat(["missed", "mvac", "side"]), by = {}; let preR = 0, preU = 0;
+  reports.forEach(r => { if (unitSet && !unitSet.has(+r.unit)) return; if (r.date < START) { preR += num(r.recv); preU += num(r.used); return; }
+    const o = by[r.date] || (by[r.date] = { recv: 0, used: 0 }); K.forEach(k => o[k] = (o[k] || 0) + num(r[k])); o.recv += num(r.recv); o.used += num(r.used); });
+  const cum = { tot: 0 }; K.forEach(k => cum[k] = 0); let cr = preR, cu = preU; const rows = [];
+  for (let i = 0; i < CAMPAIGN_DAYS; i++) { const date = dayDate(i), o = by[date] || {}, day = {}; K.forEach(k => { day[k] = o[k] || 0; cum[k] += day[k]; });
+    day.tot = AGE.reduce((s, k) => s + day[k], 0); cum.tot = AGE.reduce((s, k) => s + cum[k], 0); cr += o.recv || 0; cu += o.used || 0;
+    rows.push({ n: i + 1, date, show: date <= todayIso, day: Object.assign({}, day), cum: Object.assign({}, cum), recv: o.recv || 0, used: o.used || 0, rem: cr - cu, rate: (o.used || 0) > 0 ? rateOf(day.tot, o.used) : null }); }
+  return rows; }
 export function alertsFor(list, ref, today, sites, visits, reports) {
   const a = [];
   if (ref >= START && ref <= today) { const miss = list.filter(p => !p.rep).map(p => p.u.name);

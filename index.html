@@ -56,7 +56,11 @@ button.big{width:100%;font-size:19px;padding:14px}
 .note{border-color:var(--warn);background:var(--bg)}.inst{border-style:dashed}
 .help summary{font-weight:700}.help ol{margin:6px 0;padding-inline-start:22px}
 .acts2{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-@media print{.nav,.top .acts,#ann,footer,button,#net,#toast,.noprint{display:none!important}body{padding:0;background:#fff}.card{break-inside:avoid}}
+.rt{border-collapse:collapse;font-size:12px;min-width:900px}.rt th,.rt td{border:1px solid var(--ink);padding:3px 4px;text-align:center;white-space:nowrap}.rt th{background:var(--bg);font-weight:700}
+.rt td:first-child,.rt th:first-child{position:sticky;right:0;background:var(--card);font-weight:700}.rt.v{min-width:520px;font-size:13px}.rt tr.today td{background:rgba(15,122,90,.12)}
+.ptitle{text-align:center;font-weight:700;margin:6px 0;font-size:16px}@page{size:A4 landscape;margin:8mm}
+@media print{.rt{font-size:9px;min-width:0}.rt td:first-child,.rt th:first-child{position:static}.nav,.top .acts,#ann,footer,button,#net,#toast,.noprint{display:none!important}body{padding:0;background:#fff}.card{break-inside:avoid}}
+
 </style></head><body><div id="net" style="display:none">⚠️ لا يوجد إنترنت الآن — التقارير هتتحفظ على موبايلك وتتبعت تلقائيًا لما النت يرجع</div><main id="app"></main><div id="toast"></div>
 <footer>App Developer / Mohamed Ragab Mohamed<div style="margin-top:8px">عندك مشكلة؟ كلّم المطوّر<br><a class="btn" href="tel:01104607383" dir="ltr">📞 01104607383</a> <a class="btn" target="_blank" rel="noopener" href="https://wa.me/201104607383">واتساب</a></div><span id="ver"></span></footer>
 <script type="module" src="app.js"></script></body></html>
