@@ -46,16 +46,29 @@ export function calc(reports, ref) {
   return { per, list: UNITS.map(u => per[u.id]) };
 }
 const names = a => a.slice(0, 10).join("، ") + (a.length > 10 ? " وغيرها" : "");
-export function alertsFor(list, ref, today, sites, visits) {
+export function stockInfo(reports, ref) {
+  const by = {}; reports.forEach(r => { if (r.date <= ref) (by[r.unit] = by[r.unit] || []).push(r); });
+  const out = {};
+  UNITS.forEach(u => { const L = (by[u.id] || []).sort((a, b) => a.date.localeCompare(b.date)); if (!L.length) return;
+    const recv = L.reduce((s, r) => s + num(r.recv), 0), used = L.reduce((s, r) => s + num(r.used), 0), last = L.slice(-3), avg = last.reduce((s, r) => s + num(r.used), 0) / last.length, bal = recv - used;
+    out[u.id] = { bal, avg, recv, days: avg > 0 ? bal / avg : null }; });
+  return out; }
+export function stockFlag(s) {
+  if (!s || s.recv <= 0) return null; if (s.bal < 0) return { cls: "bad", t: "رصيد طعوم سالب" };
+  if (s.days !== null && s.days < 1) return { cls: "bad", t: "الطعوم تكفي أقل من يوم" };
+  if (s.days !== null && s.days < 2) return { cls: "warn", t: "الطعوم تكفي حوالي " + (Math.round(s.days * 10) / 10) + " يوم" }; return null; }
+export function rankRows(list, ref) { const n = ref >= START ? Math.max(1, dayDiff(ref, START) + 1) : 1;
+  return list.map(p => { const pc = p.u.target ? p.cum / p.u.target * 100 : 0, avg = p.cum / n, rem = Math.max(0, p.u.target - p.cum); return { p, pc, avg, rem, days: avg > 0 ? Math.ceil(rem / avg) : null }; }); }
+export function alertsFor(list, ref, today, sites, visits, reports) {
   const a = [];
   if (ref >= START && ref <= today) { const miss = list.filter(p => !p.rep).map(p => p.u.name);
     if (miss.length) a.push({ cls: ref < today ? "bad" : "warn", t: miss.length + " وحدة لم تسجّل تقرير " + (ref === today ? "اليوم" : fmtD(ref)), x: names(miss) }); }
-  const neg = [], low = [], hw = []; let side = 0;
-  list.forEach(p => { const bal = p.recv - p.used; side += p.side;
-    if (p.recv > 0 && bal < 0) neg.push(p.u.name); else if (p.recv > 0 && bal <= p.recv * 0.2) low.push(p.u.name + " (" + bal + ")");
+  const SI = stockInfo(reports || [], ref), bad = [], warn = [], hw = []; let side = 0;
+  list.forEach(p => { side += p.side; const f = stockFlag(SI[p.u.id]);
+    if (f) (f.cls === "bad" ? bad : warn).push(p.u.name + " (" + nf(SI[p.u.id].bal) + " زجاجة)");
     const w = wasteOf(p); if (p.used >= 3 && w !== null && w > 20) hw.push(p.u.name + " " + pct(w)); });
-  if (neg.length) a.push({ cls: "bad", t: "رصيد طعوم سالب في " + neg.length + " وحدة. راجع الوارد والمستهلك.", x: names(neg) });
-  if (low.length) a.push({ cls: "warn", t: "رصيد طعوم منخفض (أقل من 20% مما وصل) في " + low.length + " وحدة", x: names(low) });
+  if (bad.length) a.push({ cls: "bad", t: "الطعوم على وشك النفاد (أقل من يوم) أو سالبة في " + bad.length + " وحدة", x: names(bad) });
+  if (warn.length) a.push({ cls: "warn", t: "رصيد الطعوم يكفي أقل من يومين في " + warn.length + " وحدة", x: names(warn) });
   if (hw.length) a.push({ cls: "warn", t: "فاقد طعوم مرتفع (أكثر من 20%) في " + hw.length + " وحدة", x: names(hw) });
   const rv = sites.filter(s => s.status === "revisit").length; if (rv) a.push({ cls: "warn", t: rv + " موقع (مدرسة أو حضانة) يحتاج إعادة زيارة", x: "التفاصيل في تبويب المواقع." });
   if (side) a.push({ cls: "info", t: "آثار جانبية مسجّلة: " + nf(side) + " حالة", x: "" });
